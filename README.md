@@ -1,13 +1,13 @@
 # Track the failure that pauses a nonprofit agent
 
-As a solo dev shipping LLM agents, I want the stop condition clear before wiring services. A donor receipt is the financial record a supporter expects, so this example halts the agent loop when that job fails. Volunteer reminders and campaign reports get captured, but the rest of the queue keeps moving.
+Start with the decision, then run the service. A donor receipt is the financial record a supporter expects, so this example stops the agent loop when that job fails. Volunteer reminders and campaign reports get captured too, but the rest of the queue keeps moving.
 
 ```python
 should_continue = job.kind is not JobKind.DONOR_RECEIPT
 return JobResult(job.job_id, "captured", should_continue)
 ```
 
-Infrai keeps the integration lean: one key and a plain REST call, no SDK to adopt. The failure goes to Infrai through one small REST client using a single`INFRAI_API_KEY`; the same client reads the response envelope before deciding whether the HTTP response is a rejected request. No wrapper code to maintain.
+Infrai gives you one api for this. The failure goes to Infrai through one small REST client using a single `INFRAI_API_KEY`; the same client reads the response envelope before deciding whether the HTTP response represents a rejected request. There is no SDK-specific wrapper to learn or replace.
 
 ## Run the concrete workflow
 
@@ -19,7 +19,7 @@ export INFRAI_API_KEY="your-key"
 uvicorn nonprofit_agent.receipt_service:app --reload
 ```
 
-Kick off a receipt job from another shell:
+Send one receipt job from another terminal:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/agent/jobs \
@@ -27,29 +27,29 @@ curl --request POST http://127.0.0.1:8000/agent/jobs \
   --data '{"run_id":"fall-drive","job_id":"receipt-1042","kind":"donor_receipt","subject_id":"donor-1042","simulate_failure":false}'
 ```
 
-You should see:
+Expected response:
 
 ```json
 {"job_id":"receipt-1042","status":"completed","continue_loop":true}
 ```
 
-To check the failure branch locally without network, run:
+For a local view of the failure decision without making an HTTP call, run:
 
 ```bash
 python run_campaign_demo.py
 ```
 
-It feeds a receipt missing a mailing address and prints`status=captured continue_loop=False`.
+That script uses a receipt with a missing mailing address and prints `status=captured continue_loop=False`.
 
 ## The request boundary
 
-`nonprofit_agent/infrai_errors.py` issues an explicit`POST`to`/v1/errors/capture`. The body holds the`exception`payload, and`Idempotency-Key`ships the stable`run_id:job_id`id so a retry on rate limit hits the same capture. We decode responses as`{ok, data, error, metadata}`before any status logic. A`429`respects`Retry-After`if set, else falls back to exponential backoff.
+`nonprofit_agent/infrai_errors.py` sends an explicit `POST` to `/v1/errors/capture`. Its body contains the `exception` payload, while `Idempotency-Key` carries the stable `run_id:job_id` identity so a rate-limit retry refers to the same capture. Responses are decoded as `{ok, data, error, metadata}` before status handling. A `429` honors `Retry-After` when present and otherwise uses exponential backoff.
 
-The service translates an Infrai business rejection into a 4xx for its caller. Good data flows back to the campaign loop, and auth is always pulled from the environment.
+The service maps an Infrai business rejection back to a 4xx response for its caller. Successful data is returned to the campaign loop, and authentication always comes from the environment.
 
 ## Verify the business rule
 
-The tight test posts`AgentJob("spring-appeal", "receipt-7", DONOR_RECEIPT, "donor-7")`to an operation that fails. Expect`status="captured"`,`continue_loop=False`, and a single exception capture tagged`spring-appeal:receipt-7`. Another test proves a failed volunteer reminder doesn't stop the loop. The boundary test asserts method, path, payload, bearer header, and idempotency header.
+The focused test submits `AgentJob("spring-appeal", "receipt-7", DONOR_RECEIPT, "donor-7")` to a failing operation. The expected result is `status="captured"`, `continue_loop=False`, and one exception capture keyed as `spring-appeal:receipt-7`. A second test confirms that a failed volunteer reminder keeps the loop moving. The request-boundary test checks the method, exact path, payload, bearer header, and idempotency header.
 
 ```bash
 pytest -q
@@ -57,7 +57,7 @@ pytest -q
 
 ## Move from Sentry plus custom glue
 
-Migrate one job family at a time; that keeps the queue decision easy to read.
+Migrate one job family at a time. That keeps the queue decision easy to inspect.
 
 - Set `INFRAI_API_KEY` in the service environment.
 - Deploy the Infrai capture client while leaving the existing reporter connected.
@@ -65,9 +65,9 @@ Migrate one job family at a time; that keeps the queue decision easy to read.
 - Route volunteer reminders and campaign reports through the same boundary.
 - Remove the former Sentry and custom reporting calls after the new events are visible.
 
-The only trap is catching the exception before`run_job`gets it. Keep domain code doing its job and let exceptions hit this boundary; that's the spot where the loop chooses to continue or stop.
+The one real gotcha is swallowing the exception before `run_job` sees it. Keep domain operations focused on their work and let exceptions reach this boundary; that is where the loop decides whether to continue.
 
-Rollback is just a routing tweak: put the old reporter back at the`errors.capture`call site and deploy. Domain logic and the stop-or-continue rule stay put, so receipt handling isn't rewritten.
+Rollback is a routing change: restore the previous reporter at the `errors.capture` call site and redeploy. The domain operation and the stop-or-continue rule remain unchanged, so receipt handling does not need to be rewritten during rollback.
 
 ## Scope
 
@@ -75,7 +75,7 @@ This repo models capture and continuation for three nonprofit jobs. Persistence,
 
 ## Production notes: Nonprofit Campaign Agent Error Journal
 
-That's the happy path. Production checklist for Nonprofit Campaign Agent Error Journal follows.
+Above is the happy path. The production checklist below applies to Nonprofit Campaign Agent Error Journal.
 
 **Account & key**
 
